@@ -3,7 +3,7 @@ use clap::Parser;
 use log::{error, info, warn};
 use neovim_manager::{utils, HealthStatus, InstanceResult};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
@@ -96,6 +96,40 @@ impl LauncherClient {
 
         Ok(())
     }
+
+    async fn monitor_instance_with_exit_code(&self, identifier: &str, nvim_process: Child) -> Result<i32> {
+        info!("Monitoring instance: {}", identifier);
+        
+        let mut nvim_process = nvim_process;
+        
+        loop {
+            match self.query_instance(identifier).await {
+                Ok(Some(_)) => {
+                    sleep(Duration::from_millis(500)).await;
+                }
+                Ok(None) => {
+                    info!("Instance {} no longer exists, checking exit code", identifier);
+                    
+                    // Neovimプロセスの終了を待機して終了コードを取得
+                    match nvim_process.wait() {
+                        Ok(status) => {
+                            let exit_code = status.code().unwrap_or(-1);
+                            info!("Neovim process exited with code: {}", exit_code);
+                            return Ok(exit_code);
+                        }
+                        Err(e) => {
+                            error!("Failed to wait for Neovim process: {}", e);
+                            return Ok(-1);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Error monitoring instance {}: {}", identifier, e);
+                    sleep(Duration::from_millis(500)).await;
+                }
+            }
+        }
+    }
 }
 
 fn generate_identifier(target: Option<&PathBuf>) -> Result<String> {
@@ -116,7 +150,7 @@ fn generate_identifier(target: Option<&PathBuf>) -> Result<String> {
     Ok(canonical.to_string_lossy().to_string())
 }
 
-fn launch_neovim_server(_identifier: &str, target: Option<&PathBuf>, server_address: &str) -> Result<()> {
+fn launch_neovim_server(_identifier: &str, target: Option<&PathBuf>, server_address: &str) -> Result<Child> {
     let target_arg = target
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| ".".to_string());
@@ -151,7 +185,7 @@ fn launch_neovim_server(_identifier: &str, target: Option<&PathBuf>, server_addr
     eprintln!("Nvim server spawned with PID: {:?}", nvim_child.id());
     std::thread::sleep(Duration::from_millis(1000));
     
-    Ok(())
+    Ok(nvim_child)
 }
 
 fn launch_neovide_client(server_address: &str) -> Result<()> {
@@ -294,89 +328,101 @@ async fn main() -> Result<()> {
                 client.monitor_instance(&identifier).await?;
             }
             None => {
-                info!("Creating new local instance");
-                let port = utils::get_random_port()?;
-                let server_address = format!("127.0.0.1:{}", port);
-                
-                // Neovimサーバーを起動
-                launch_neovim_server(&identifier, cli.target.as_ref(), &server_address)?;
-                
-                // Neovimインスタンスが起動するまで待機
-                info!("Waiting for Neovim instance to start...");
-                let mut attempts = 0;
-                let max_attempts = 30; // 15秒間待機
-                
+                // 終了コード2の場合は再起動ループ
                 loop {
-                    if utils::check_nvim_instance(&server_address).unwrap_or(false) {
-                        info!("Neovim instance is ready");
-                        break;
-                    }
+                    info!("Creating new local instance");
+                    let port = utils::get_random_port()?;
+                    let server_address = format!("127.0.0.1:{}", port);
                     
-                    attempts += 1;
-                    if attempts >= max_attempts {
-                        error!("Neovim instance failed to start within 15 seconds");
-                        std::process::exit(3);
-                    }
+                    // Neovimサーバーを起動
+                    let nvim_process = launch_neovim_server(&identifier, cli.target.as_ref(), &server_address)?;
                     
-                    sleep(Duration::from_millis(500)).await;
-                }
-                
-                // インスタンスを登録
-                match client.register_instance(&identifier, &server_address).await {
-                    Ok(()) => {
-                        info!("Instance registered successfully");
-                        
-                        // 登録直後の確認（即座に登録されているはず）
-                        match client.query_instance(&identifier).await? {
-                            Some(instance) => {
-                                info!("Instance registration confirmed");
-                                
-                                // ヘルスステータスがHealthyになるまで待機
-                                if !matches!(instance.health_status, HealthStatus::Healthy) {
-                                    info!("Waiting for instance to become healthy...");
-                                    let mut attempts = 0;
-                                    let max_attempts = 60; // 30秒間待機（5秒間隔のヘルスチェック）
-                                    
-                                    loop {
-                                        sleep(Duration::from_millis(500)).await;
-                                        
-                                        match client.query_instance(&identifier).await? {
-                                            Some(updated_instance) => {
-                                                if matches!(updated_instance.health_status, HealthStatus::Healthy) {
-                                                    info!("Instance is now healthy");
-                                                    break;
-                                                }
-                                            }
-                                            None => {
-                                                error!("Instance disappeared during health check wait");
-                                                std::process::exit(5);
-                                            }
-                                        }
-                                        
-                                        attempts += 1;
-                                        if attempts >= max_attempts {
-                                            error!("Instance did not become healthy within 30 seconds");
-                                            std::process::exit(6);
-                                        }
-                                    }
-                                } else {
-                                    info!("Instance is already healthy");
-                                }
-                                
-                                // Neovide クライアントを起動
-                                launch_neovide_client(&server_address)?;
-                            }
-                            None => {
-                                error!("Instance not found immediately after registration - this should not happen");
-                                std::process::exit(4);
-                            }
+                    // Neovimインスタンスが起動するまで待機
+                    info!("Waiting for Neovim instance to start...");
+                    let mut attempts = 0;
+                    let max_attempts = 30; // 15秒間待機
+                    
+                    loop {
+                        if utils::check_nvim_instance(&server_address).unwrap_or(false) {
+                            info!("Neovim instance is ready");
+                            break;
                         }
                         
-                        client.monitor_instance(&identifier).await?;
+                        attempts += 1;
+                        if attempts >= max_attempts {
+                            error!("Neovim instance failed to start within 15 seconds");
+                            std::process::exit(3);
+                        }
+                        
+                        sleep(Duration::from_millis(500)).await;
                     }
-                    Err(e) => {
-                        error!("Failed to register instance: {}", e);
-                        std::process::exit(2);
+                    
+                    // インスタンスを登録
+                    match client.register_instance(&identifier, &server_address).await {
+                        Ok(()) => {
+                            info!("Instance registered successfully");
+                            
+                            // 登録直後の確認（即座に登録されているはず）
+                            match client.query_instance(&identifier).await? {
+                                Some(instance) => {
+                                    info!("Instance registration confirmed");
+                                    
+                                    // ヘルスステータスがHealthyになるまで待機
+                                    if !matches!(instance.health_status, HealthStatus::Healthy) {
+                                        info!("Waiting for instance to become healthy...");
+                                        let mut attempts = 0;
+                                        let max_attempts = 60; // 30秒間待機（5秒間隔のヘルスチェック）
+                                        
+                                        loop {
+                                            sleep(Duration::from_millis(500)).await;
+                                            
+                                            match client.query_instance(&identifier).await? {
+                                                Some(updated_instance) => {
+                                                    if matches!(updated_instance.health_status, HealthStatus::Healthy) {
+                                                        info!("Instance is now healthy");
+                                                        break;
+                                                    }
+                                                }
+                                                None => {
+                                                    error!("Instance disappeared during health check wait");
+                                                    std::process::exit(5);
+                                                }
+                                            }
+                                            
+                                            attempts += 1;
+                                            if attempts >= max_attempts {
+                                                error!("Instance did not become healthy within 30 seconds");
+                                                std::process::exit(6);
+                                            }
+                                        }
+                                    } else {
+                                        info!("Instance is already healthy");
+                                    }
+                                    
+                                    // Neovide クライアントを起動
+                                    launch_neovide_client(&server_address)?;
+                                }
+                                None => {
+                                    error!("Instance not found immediately after registration - this should not happen");
+                                    std::process::exit(4);
+                                }
+                            }
+                            
+                            // 監視して終了コードを取得
+                            let exit_code = client.monitor_instance_with_exit_code(&identifier, nvim_process).await?;
+                            
+                            if exit_code == 2 {
+                                info!("Neovim exited with code 2, restarting...");
+                                continue; // 再起動ループを継続
+                            } else {
+                                info!("Neovim exited with code {}, ending", exit_code);
+                                break; // ループを抜けて終了
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to register instance: {}", e);
+                            std::process::exit(2);
+                        }
                     }
                 }
             }
