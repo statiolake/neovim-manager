@@ -1,0 +1,27 @@
+[package]
+name = "neovim-manager"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "neovim-instance-manager"
+path = "src/manager/main.rs"
+
+[[bin]]
+name = "neovim-instance-manager-control"
+path = "src/control/main.rs"
+
+[[bin]]
+name = "neovim-launcher"
+path = "src/launcher/main.rs"
+
+[dependencies]
+anyhow = "1.0.99"
+chrono = { version = "0.4.41", features = ["serde"] }
+clap = { version = "4.5.45", features = ["derive"] }
+env_logger = "0.11.8"
+log = "0.4.27"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.142"
+tokio = { version = "1.47.1", features = ["full"] }
+uuid = { version = "1.18.0", features = ["v4"] }

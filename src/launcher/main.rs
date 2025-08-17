@@ -1,0 +1,325 @@
+use anyhow::{anyhow, Result};
+use clap::Parser;
+use log::{error, info, warn};
+use neovim_manager::{utils, HealthStatus, InstanceResult};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+use tokio::time::sleep;
+
+#[derive(Parser)]
+#[command(name = "neovim-launcher")]
+#[command(about = "High-level Neovim launcher with instance management")]
+struct Cli {
+    #[arg(help = "File or directory to open")]
+    target: Option<PathBuf>,
+    
+    #[arg(long, help = "Remote mode")]
+    remote: bool,
+    
+    #[arg(long, help = "Remote identifier (required for remote mode)")]
+    identifier: Option<String>,
+    
+    #[arg(long, help = "Remote server address (required for remote mode)")]
+    server_address: Option<String>,
+}
+
+struct LauncherClient {
+    control_binary: String,
+}
+
+impl LauncherClient {
+    fn new() -> Result<Self> {
+        let current_exe = std::env::current_exe()?;
+        let control_path = current_exe
+            .parent()
+            .ok_or_else(|| anyhow!("Cannot determine executable directory"))?
+            .join("neovim-instance-manager-control");
+        
+        Ok(Self {
+            control_binary: control_path.to_string_lossy().to_string(),
+        })
+    }
+
+    async fn query_instance(&self, identifier: &str) -> Result<Option<InstanceResult>> {
+        let output = Command::new(&self.control_binary)
+            .args(["query", identifier])
+            .output()?;
+
+        if !output.status.success() {
+            return Ok(None);
+        }
+
+        let stdout = String::from_utf8(output.stdout)?;
+        let trimmed = stdout.trim();
+        
+        let result: Option<InstanceResult> = serde_json::from_str(trimmed)
+            .map_err(|e| anyhow!("Failed to parse JSON from stdout '{}': {}", trimmed, e))?;
+        
+        Ok(result)
+    }
+
+    async fn register_instance(&self, identifier: &str, server_address: &str) -> Result<()> {
+        let output = Command::new(&self.control_binary)
+            .args(["register", identifier, server_address])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8(output.stderr)?;
+            return Err(anyhow!("Failed to register instance: {}", stderr));
+        }
+
+        Ok(())
+    }
+
+    async fn monitor_instance(&self, identifier: &str) -> Result<()> {
+        info!("Monitoring instance: {}", identifier);
+        
+        loop {
+            match self.query_instance(identifier).await {
+                Ok(Some(_)) => {
+                    sleep(Duration::from_millis(500)).await;
+                }
+                Ok(None) => {
+                    info!("Instance {} no longer exists, exiting", identifier);
+                    break;
+                }
+                Err(e) => {
+                    warn!("Error monitoring instance {}: {}", identifier, e);
+                    sleep(Duration::from_millis(500)).await;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn generate_identifier(target: Option<&PathBuf>) -> Result<String> {
+    let path = match target {
+        Some(path) => {
+            if path.is_dir() {
+                path.clone()
+            } else {
+                path.parent()
+                    .ok_or_else(|| anyhow!("Cannot determine parent directory"))?
+                    .to_path_buf()
+            }
+        }
+        None => std::env::current_dir()?,
+    };
+
+    let canonical = path.canonicalize()?;
+    Ok(canonical.to_string_lossy().to_string())
+}
+
+fn launch_neovim_server(_identifier: &str, target: Option<&PathBuf>, server_address: &str) -> Result<()> {
+    let target_arg = target
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string());
+
+    let args = [
+        "--listen", 
+        server_address,
+        "--headless",
+        &target_arg,
+    ];
+
+    eprintln!("Executing: nvim {}", args.join(" "));
+    info!("Launching Neovim server: {}", server_address);
+
+    let mut nvim_cmd = Command::new("nvim");
+    nvim_cmd.args(args);
+    
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        nvim_cmd.creation_flags(0x08000000);
+    }
+    
+    #[cfg(not(windows))]
+    {
+        nvim_cmd.stdin(Stdio::null())
+               .stdout(Stdio::null())
+               .stderr(Stdio::null());
+    }
+    
+    let nvim_child = nvim_cmd.spawn()?;
+    eprintln!("Nvim server spawned with PID: {:?}", nvim_child.id());
+    std::thread::sleep(Duration::from_millis(1000));
+    
+    Ok(())
+}
+
+fn launch_neovide_client(server_address: &str) -> Result<()> {
+    let neovide_cmd = utils::get_neovide_command();
+    let args = ["--server", server_address];
+
+    eprintln!("Executing: {} {}", neovide_cmd, args.join(" "));
+    info!("Launching Neovide client for server: {}", server_address);
+
+    let mut cmd = Command::new(neovide_cmd);
+    cmd.args(args);
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    
+    #[cfg(not(windows))]
+    {
+        cmd.stdin(Stdio::null())
+           .stdout(Stdio::null())
+           .stderr(Stdio::null());
+    }
+
+    let _child = cmd.spawn()?;
+    eprintln!("Neovide client spawned successfully");
+    std::thread::sleep(Duration::from_millis(500));
+    
+    Ok(())
+}
+
+async fn focus_existing_instance(server_address: &str) -> Result<()> {
+    info!("Focusing existing instance: {}", server_address);
+    
+    // CLAUDE.mdに従ってNeovideFocusコマンドを実行
+    utils::focus_nvim_instance(server_address)?;
+    
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    env_logger::init();
+    
+    let cli = Cli::parse();
+    let client = LauncherClient::new()?;
+
+    let identifier = if cli.remote {
+        cli.identifier
+            .ok_or_else(|| anyhow!("--identifier is required in remote mode"))?
+    } else {
+        generate_identifier(cli.target.as_ref())?
+    };
+
+    info!("Using identifier: {}", identifier);
+
+    if cli.remote {
+        let server_address = cli.server_address
+            .ok_or_else(|| anyhow!("--server-address is required in remote mode"))?;
+
+        // リモートモードでは既存インスタンスをチェックして、なければ登録のみ
+        match client.query_instance(&identifier).await? {
+            Some(instance) => {
+                info!("Found existing remote instance");
+                focus_existing_instance(&instance.server_address).await?;
+                client.monitor_instance(&identifier).await?;
+            }
+            None => {
+                info!("Registering remote instance");
+                client.register_instance(&identifier, &server_address).await?;
+                client.monitor_instance(&identifier).await?;
+            }
+        }
+    } else {
+        // ローカルモード
+        match client.query_instance(&identifier).await? {
+            Some(instance) => {
+                info!("Found existing local instance");
+                focus_existing_instance(&instance.server_address).await?;
+                client.monitor_instance(&identifier).await?;
+            }
+            None => {
+                info!("Creating new local instance");
+                let port = utils::get_random_port()?;
+                let server_address = format!("127.0.0.1:{}", port);
+                
+                // Neovimサーバーを起動
+                launch_neovim_server(&identifier, cli.target.as_ref(), &server_address)?;
+                
+                // Neovimインスタンスが起動するまで待機
+                info!("Waiting for Neovim instance to start...");
+                let mut attempts = 0;
+                let max_attempts = 30; // 15秒間待機
+                
+                loop {
+                    if utils::check_nvim_instance(&server_address).unwrap_or(false) {
+                        info!("Neovim instance is ready");
+                        break;
+                    }
+                    
+                    attempts += 1;
+                    if attempts >= max_attempts {
+                        error!("Neovim instance failed to start within 15 seconds");
+                        std::process::exit(3);
+                    }
+                    
+                    sleep(Duration::from_millis(500)).await;
+                }
+                
+                // インスタンスを登録
+                match client.register_instance(&identifier, &server_address).await {
+                    Ok(()) => {
+                        info!("Instance registered successfully");
+                        
+                        // 登録直後の確認（即座に登録されているはず）
+                        match client.query_instance(&identifier).await? {
+                            Some(instance) => {
+                                info!("Instance registration confirmed");
+                                
+                                // ヘルスステータスがHealthyになるまで待機
+                                if !matches!(instance.health_status, HealthStatus::Healthy) {
+                                    info!("Waiting for instance to become healthy...");
+                                    let mut attempts = 0;
+                                    let max_attempts = 60; // 30秒間待機（5秒間隔のヘルスチェック）
+                                    
+                                    loop {
+                                        sleep(Duration::from_millis(500)).await;
+                                        
+                                        match client.query_instance(&identifier).await? {
+                                            Some(updated_instance) => {
+                                                if matches!(updated_instance.health_status, HealthStatus::Healthy) {
+                                                    info!("Instance is now healthy");
+                                                    break;
+                                                }
+                                            }
+                                            None => {
+                                                error!("Instance disappeared during health check wait");
+                                                std::process::exit(5);
+                                            }
+                                        }
+                                        
+                                        attempts += 1;
+                                        if attempts >= max_attempts {
+                                            error!("Instance did not become healthy within 30 seconds");
+                                            std::process::exit(6);
+                                        }
+                                    }
+                                } else {
+                                    info!("Instance is already healthy");
+                                }
+                                
+                                // Neovide クライアントを起動
+                                launch_neovide_client(&server_address)?;
+                            }
+                            None => {
+                                error!("Instance not found immediately after registration - this should not happen");
+                                std::process::exit(4);
+                            }
+                        }
+                        
+                        client.monitor_instance(&identifier).await?;
+                    }
+                    Err(e) => {
+                        error!("Failed to register instance: {}", e);
+                        std::process::exit(2);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
