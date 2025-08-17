@@ -2,9 +2,9 @@ use anyhow::Result;
 use chrono::Utc;
 use log::{error, info};
 use neovim_manager::{
-    errors, utils, HealthStatus, InstanceInfo, InstanceResult, InstanceStorage, JsonRpcError, JsonRpcRequest,
-    JsonRpcResponse, QueryInstanceParams, RegisterInstanceParams, UnregisterInstanceParams,
-    DEFAULT_BIND_ADDR, DEFAULT_PORT,
+    errors, utils, HealthStatus, InstanceInfo, InstanceResult, InstanceStorage, JsonRpcError,
+    JsonRpcRequest, JsonRpcResponse, QueryInstanceParams, RegisterInstanceParams,
+    UnregisterInstanceParams, DEFAULT_BIND_ADDR, DEFAULT_PORT,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -34,7 +34,7 @@ impl InstanceManager {
         for (identifier, instance) in instances.iter_mut() {
             let is_healthy = utils::check_nvim_instance(&instance.server_address).unwrap_or(false);
             instance.last_health_check = now;
-            
+
             if is_healthy {
                 if matches!(instance.health_status, HealthStatus::Unknown) {
                     info!("Instance {} is now healthy", identifier);
@@ -59,7 +59,7 @@ impl InstanceManager {
     async fn query_instance(&self, identifier: &str) -> Result<Option<InstanceResult>> {
         // ヘルスチェックは別途実行するので、クエリ時は実行しない
         // self.health_check_all().await?;
-        
+
         let instances = self.instances.read().await;
         if let Some(instance) = instances.get(identifier) {
             Ok(Some(InstanceResult {
@@ -75,7 +75,7 @@ impl InstanceManager {
 
     async fn list_instances(&self) -> Result<Vec<InstanceResult>> {
         self.health_check_all().await?;
-        
+
         let instances = self.instances.read().await;
         let results = instances
             .values()
@@ -86,13 +86,13 @@ impl InstanceManager {
                 last_health_check: instance.last_health_check,
             })
             .collect();
-        
+
         Ok(results)
     }
 
     async fn register_instance(&self, identifier: String, server_address: String) -> Result<()> {
         let mut instances = self.instances.write().await;
-        
+
         if instances.contains_key(&identifier) {
             return Err(anyhow::anyhow!("Instance already exists"));
         }
@@ -108,13 +108,13 @@ impl InstanceManager {
 
         instances.insert(identifier.clone(), instance);
         info!("Registered instance: {}", identifier);
-        
+
         Ok(())
     }
 
     async fn unregister_instance(&self, identifier: &str) -> Result<()> {
         let mut instances = self.instances.write().await;
-        
+
         if instances.remove(identifier).is_some() {
             info!("Unregistered instance: {}", identifier);
             Ok(())
@@ -125,21 +125,19 @@ impl InstanceManager {
 
     async fn handle_request(&self, request: JsonRpcRequest) -> JsonRpcResponse {
         let id = request.id.clone();
-        
+
         let result = match request.method.as_str() {
             "query_instance" => {
                 match serde_json::from_value::<QueryInstanceParams>(request.params) {
-                    Ok(params) => {
-                        match self.query_instance(&params.identifier).await {
-                            Ok(Some(instance)) => Ok(json!(instance)),
-                            Ok(None) => Ok(Value::Null),
-                            Err(e) => Err(JsonRpcError {
-                                code: errors::INTERNAL_ERROR,
-                                message: e.to_string(),
-                                data: None,
-                            }),
-                        }
-                    }
+                    Ok(params) => match self.query_instance(&params.identifier).await {
+                        Ok(Some(instance)) => Ok(json!(instance)),
+                        Ok(None) => Ok(Value::Null),
+                        Err(e) => Err(JsonRpcError {
+                            code: errors::INTERNAL_ERROR,
+                            message: e.to_string(),
+                            data: None,
+                        }),
+                    },
                     Err(e) => Err(JsonRpcError {
                         code: errors::INTERNAL_ERROR,
                         message: format!("Invalid parameters: {}", e),
@@ -147,20 +145,21 @@ impl InstanceManager {
                     }),
                 }
             }
-            "list_instances" => {
-                match self.list_instances().await {
-                    Ok(instances) => Ok(json!(instances)),
-                    Err(e) => Err(JsonRpcError {
-                        code: errors::INTERNAL_ERROR,
-                        message: e.to_string(),
-                        data: None,
-                    }),
-                }
-            }
+            "list_instances" => match self.list_instances().await {
+                Ok(instances) => Ok(json!(instances)),
+                Err(e) => Err(JsonRpcError {
+                    code: errors::INTERNAL_ERROR,
+                    message: e.to_string(),
+                    data: None,
+                }),
+            },
             "register_instance" => {
                 match serde_json::from_value::<RegisterInstanceParams>(request.params) {
                     Ok(params) => {
-                        match self.register_instance(params.identifier.clone(), params.server_address).await {
+                        match self
+                            .register_instance(params.identifier.clone(), params.server_address)
+                            .await
+                        {
                             Ok(()) => Ok(json!("registered")),
                             Err(_) => Err(JsonRpcError {
                                 code: errors::INSTANCE_ALREADY_EXISTS,
@@ -178,16 +177,14 @@ impl InstanceManager {
             }
             "unregister_instance" => {
                 match serde_json::from_value::<UnregisterInstanceParams>(request.params) {
-                    Ok(params) => {
-                        match self.unregister_instance(&params.identifier).await {
-                            Ok(()) => Ok(json!("unregistered")),
-                            Err(_) => Err(JsonRpcError {
-                                code: errors::INSTANCE_NOT_FOUND,
-                                message: "Instance not found".to_string(),
-                                data: Some(json!({"identifier": params.identifier})),
-                            }),
-                        }
-                    }
+                    Ok(params) => match self.unregister_instance(&params.identifier).await {
+                        Ok(()) => Ok(json!("unregistered")),
+                        Err(_) => Err(JsonRpcError {
+                            code: errors::INSTANCE_NOT_FOUND,
+                            message: "Instance not found".to_string(),
+                            data: Some(json!({"identifier": params.identifier})),
+                        }),
+                    },
                     Err(e) => Err(JsonRpcError {
                         code: errors::INTERNAL_ERROR,
                         message: format!("Invalid parameters: {}", e),
@@ -231,12 +228,12 @@ async fn handle_client(stream: TcpStream, manager: Arc<InstanceManager>) -> Resu
     loop {
         line.clear();
         let bytes_read = reader.read_line(&mut line).await?;
-        
+
         if bytes_read == 0 {
             // Client disconnected
             break;
         }
-        
+
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -245,9 +242,7 @@ async fn handle_client(stream: TcpStream, manager: Arc<InstanceManager>) -> Resu
         info!("Received request: {}", trimmed);
 
         let response = match serde_json::from_str::<JsonRpcRequest>(trimmed) {
-            Ok(request) => {
-                manager.handle_request(request).await
-            }
+            Ok(request) => manager.handle_request(request).await,
             Err(e) => {
                 error!("Failed to parse JSON-RPC request: {}", e);
                 JsonRpcResponse {
@@ -265,7 +260,7 @@ async fn handle_client(stream: TcpStream, manager: Arc<InstanceManager>) -> Resu
 
         let response_json = serde_json::to_string(&response)?;
         info!("Sending response: {}", response_json);
-        
+
         writer.write_all(response_json.as_bytes()).await?;
         writer.write_all(b"\n").await?;
         writer.flush().await?;
@@ -278,7 +273,7 @@ async fn handle_client(stream: TcpStream, manager: Arc<InstanceManager>) -> Resu
 async fn main() -> Result<()> {
     std::env::set_var("RUST_LOG", "debug");
     env_logger::init();
-    
+
     let port = std::env::var("NEOVIM_MANAGER_PORT")
         .unwrap_or_else(|_| DEFAULT_PORT.to_string())
         .parse::<u16>()

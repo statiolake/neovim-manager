@@ -46,7 +46,7 @@ impl ManagerClient {
             .unwrap_or_else(|_| DEFAULT_PORT.to_string())
             .parse::<u16>()
             .unwrap_or(DEFAULT_PORT);
-        
+
         Self {
             addr: format!("{}:{}", DEFAULT_BIND_ADDR, port),
         }
@@ -60,7 +60,7 @@ impl ManagerClient {
 
         // マネージャーを起動
         self.start_manager()?;
-        
+
         // 起動を待つ（最大5秒）
         for i in 0..10 {
             sleep(Duration::from_millis(500)).await;
@@ -77,14 +77,14 @@ impl ManagerClient {
 
     fn start_manager(&self) -> Result<()> {
         use std::process::Stdio;
-        
+
         // まず現在の実行可能ファイルのパスから推測
         let current_exe = std::env::current_exe()?;
         let manager_path = current_exe
             .parent()
             .ok_or_else(|| anyhow!("Cannot determine executable directory"))?
             .join("neovim-instance-manager");
-        
+
         Command::new(&manager_path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -97,12 +97,12 @@ impl ManagerClient {
         self.ensure_manager_running().await?;
 
         let debug = std::env::var("NEOVIM_MANAGER_DEBUG").is_ok();
-        
+
         if debug {
             eprintln!("Connecting to manager at {}", self.addr);
         }
         let mut stream = TcpStream::connect(&self.addr).await?;
-        
+
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             method: method.to_string(),
@@ -114,7 +114,7 @@ impl ManagerClient {
         if debug {
             eprintln!("Sending request: {}", request_json);
         }
-        
+
         stream.write_all(request_json.as_bytes()).await?;
         stream.write_all(b"\n").await?;
         stream.flush().await?;
@@ -122,7 +122,7 @@ impl ManagerClient {
         let (reader, _) = stream.into_split();
         let mut reader = BufReader::new(reader);
         let mut line = String::new();
-        
+
         if debug {
             eprintln!("Waiting for response...");
         }
@@ -130,19 +130,19 @@ impl ManagerClient {
         if debug {
             eprintln!("Read {} bytes: '{}'", bytes_read, line.trim());
         }
-        
+
         if bytes_read == 0 {
             return Err(anyhow!("Connection closed by manager"));
         }
-        
+
         let trimmed = line.trim();
         if trimmed.is_empty() {
             return Err(anyhow!("Empty response from manager"));
         }
-        
+
         let response: JsonRpcResponse = serde_json::from_str(trimmed)
             .map_err(|e| anyhow!("Failed to parse response '{}': {}", trimmed, e))?;
-        
+
         Ok(response)
     }
 
@@ -152,7 +152,7 @@ impl ManagerClient {
         })?;
 
         let response = self.send_request("query_instance", params).await?;
-        
+
         if let Some(error) = response.error {
             eprintln!("Error: {} (code: {})", error.message, error.code);
             std::process::exit(1);
@@ -169,7 +169,7 @@ impl ManagerClient {
 
     async fn list_instances(&self) -> Result<()> {
         let response = self.send_request("list_instances", json!({})).await?;
-        
+
         if let Some(error) = response.error {
             eprintln!("Error: {} (code: {})", error.message, error.code);
             std::process::exit(1);
@@ -189,7 +189,7 @@ impl ManagerClient {
         })?;
 
         let response = self.send_request("register_instance", params).await?;
-        
+
         if let Some(error) = response.error {
             eprintln!("Error: {} (code: {})", error.message, error.code);
             std::process::exit(1);
@@ -208,7 +208,7 @@ impl ManagerClient {
         })?;
 
         let response = self.send_request("unregister_instance", params).await?;
-        
+
         if let Some(error) = response.error {
             eprintln!("Error: {} (code: {})", error.message, error.code);
             std::process::exit(1);
@@ -223,7 +223,7 @@ impl ManagerClient {
 
     async fn shutdown(&self) -> Result<()> {
         let response = self.send_request("shutdown", json!({})).await?;
-        
+
         if let Some(error) = response.error {
             eprintln!("Error: {} (code: {})", error.message, error.code);
             std::process::exit(1);
@@ -246,8 +246,13 @@ async fn main() -> Result<()> {
         Commands::List => {
             client.list_instances().await?;
         }
-        Commands::Register { identifier, server_address } => {
-            client.register_instance(&identifier, &server_address).await?;
+        Commands::Register {
+            identifier,
+            server_address,
+        } => {
+            client
+                .register_instance(&identifier, &server_address)
+                .await?;
         }
         Commands::Unregister { identifier } => {
             client.unregister_instance(&identifier).await?;

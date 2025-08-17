@@ -80,19 +80,14 @@ pub struct InstanceResult {
 pub type InstanceStorage = HashMap<String, InstanceInfo>;
 
 pub mod utils {
-    use std::process::Command;
     use anyhow::Result;
+    use std::process::Command;
 
     pub fn check_nvim_instance(server_address: &str) -> Result<bool> {
         let output = Command::new("nvim")
-            .args([
-                "--server",
-                server_address,
-                "--remote-expr",
-                "1",
-            ])
+            .args(["--server", server_address, "--remote-expr", "1"])
             .output()?;
-        
+
         Ok(output.status.success())
     }
 
@@ -105,20 +100,15 @@ pub mod utils {
                 "execute('NeovideFocus')",
             ])
             .output()?;
-        
+
         Ok(())
     }
 
     pub fn open_file_in_nvim_instance(server_address: &str, file_path: &str) -> Result<()> {
         Command::new("nvim")
-            .args([
-                "--server",
-                server_address,
-                "--remote",
-                file_path,
-            ])
+            .args(["--server", server_address, "--remote", file_path])
             .output()?;
-        
+
         Ok(())
     }
 
@@ -131,7 +121,7 @@ pub mod utils {
                 "execute('quit')",
             ])
             .output()?;
-        
+
         Ok(output.status.success())
     }
 
@@ -143,36 +133,45 @@ pub mod utils {
                     return Ok(());
                 }
                 Ok(false) => {
-                    eprintln!("Quit command failed for {} (attempt {}/{})", server_address, attempt, max_retries);
+                    eprintln!(
+                        "Quit command failed for {} (attempt {}/{})",
+                        server_address, attempt, max_retries
+                    );
                 }
                 Err(e) => {
-                    eprintln!("Error sending quit to {} (attempt {}/{}): {}", server_address, attempt, max_retries, e);
+                    eprintln!(
+                        "Error sending quit to {} (attempt {}/{}): {}",
+                        server_address, attempt, max_retries, e
+                    );
                 }
             }
-            
+
             if attempt < max_retries {
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
         }
-        
-        Err(anyhow::anyhow!("Failed to quit Neovim instance after {} attempts", max_retries))
+
+        Err(anyhow::anyhow!(
+            "Failed to quit Neovim instance after {} attempts",
+            max_retries
+        ))
     }
 
     pub fn get_random_port() -> Result<u16> {
         use std::net::TcpListener;
-        
+
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let addr = listener.local_addr()?;
         drop(listener);
-        
+
         Ok(addr.port())
     }
 
     pub fn is_wsl() -> bool {
-        std::env::var("WSL_DISTRO_NAME").is_ok() ||
-        std::fs::read_to_string("/proc/version")
-            .map(|content| content.contains("Microsoft"))
-            .unwrap_or(false)
+        std::env::var("WSL_DISTRO_NAME").is_ok()
+            || std::fs::read_to_string("/proc/version")
+                .map(|content| content.contains("Microsoft"))
+                .unwrap_or(false)
     }
 
     pub fn get_neovide_command() -> &'static str {
