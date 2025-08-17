@@ -4,7 +4,10 @@ use log::{error, info, warn};
 use neovim_manager::{utils, HealthStatus, InstanceResult};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::signal;
+use tokio::sync::Mutex;
 use tokio::time::sleep;
 
 #[derive(Parser)]
@@ -21,7 +24,7 @@ struct Cli {
     identifier: Option<String>,
     
     #[arg(long, help = "Remote server address (required for remote mode)")]
-    server_address: Option<String>,
+    server: Option<String>,
 }
 
 struct LauncherClient {
@@ -190,12 +193,29 @@ async fn focus_existing_instance(server_address: &str) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct CleanupInfo {
+    server_address: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
     
     let cli = Cli::parse();
     let client = LauncherClient::new()?;
+    
+    // クリーンアップ情報を管理
+    let cleanup_info = Arc::new(Mutex::new(CleanupInfo {
+        server_address: None,
+    }));
+
+    // ファイルが指定された場合はエラー
+    if let Some(target) = &cli.target {
+        if target.is_file() {
+            return Err(anyhow!("File arguments are not yet supported. Please specify a directory or use current directory."));
+        }
+    }
 
     let identifier = if cli.remote {
         cli.identifier
@@ -206,19 +226,56 @@ async fn main() -> Result<()> {
 
     info!("Using identifier: {}", identifier);
 
-    if cli.remote {
-        let server_address = cli.server_address
-            .ok_or_else(|| anyhow!("--server-address is required in remote mode"))?;
+    // Ctrl+C ハンドラーを設定
+    let cleanup_info_clone = Arc::clone(&cleanup_info);
+    tokio::spawn(async move {
+        if let Err(e) = signal::ctrl_c().await {
+            error!("Failed to listen for ctrl-c: {}", e);
+            return;
+        }
+        
+        info!("Received Ctrl+C, performing cleanup...");
+        let cleanup = cleanup_info_clone.lock().await;
+        
+        if let Some(server_address) = &cleanup.server_address {
+            eprintln!("Cleaning up unused Neovim server: {}", server_address);
+            if let Err(e) = utils::quit_nvim_instance_with_retry(server_address, 3) {
+                eprintln!("Failed to cleanup server: {}", e);
+            }
+        }
+        
+        std::process::exit(0);
+    });
 
-        // リモートモードでは既存インスタンスをチェックして、なければ登録のみ
+    if cli.remote {
+        let server_address = cli.server
+            .ok_or_else(|| anyhow!("--server is required in remote mode"))?;
+
+        // リモートモードでは既存インスタンスをチェック
         match client.query_instance(&identifier).await? {
             Some(instance) => {
                 info!("Found existing remote instance");
+                
+                // 既存インスタンスが見つかった場合、新規サーバーをクリーンアップ対象に設定
+                {
+                    let mut cleanup = cleanup_info.lock().await;
+                    cleanup.server_address = Some(server_address.clone());
+                }
+                
                 focus_existing_instance(&instance.server_address).await?;
-                client.monitor_instance(&identifier).await?;
+                
+                // 監視終了後、新規サーバーをクリーンアップ
+                let result = client.monitor_instance(&identifier).await;
+                
+                eprintln!("Cleaning up unused Neovim server: {}", server_address);
+                if let Err(e) = utils::quit_nvim_instance_with_retry(&server_address, 3) {
+                    eprintln!("Failed to cleanup server: {}", e);
+                }
+                
+                result?;
             }
             None => {
-                info!("Registering remote instance");
+                info!("Registering new remote instance");
                 client.register_instance(&identifier, &server_address).await?;
                 client.monitor_instance(&identifier).await?;
             }

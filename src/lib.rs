@@ -109,6 +109,42 @@ pub mod utils {
         Ok(())
     }
 
+    pub fn quit_nvim_instance(server_address: &str) -> Result<bool> {
+        let output = Command::new("nvim")
+            .args([
+                "--server",
+                server_address,
+                "--remote-expr",
+                "execute('quit')",
+            ])
+            .output()?;
+        
+        Ok(output.status.success())
+    }
+
+    pub fn quit_nvim_instance_with_retry(server_address: &str, max_retries: u32) -> Result<()> {
+        for attempt in 1..=max_retries {
+            match quit_nvim_instance(server_address) {
+                Ok(true) => {
+                    eprintln!("Successfully sent quit to {}", server_address);
+                    return Ok(());
+                }
+                Ok(false) => {
+                    eprintln!("Quit command failed for {} (attempt {}/{})", server_address, attempt, max_retries);
+                }
+                Err(e) => {
+                    eprintln!("Error sending quit to {} (attempt {}/{}): {}", server_address, attempt, max_retries, e);
+                }
+            }
+            
+            if attempt < max_retries {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+        
+        Err(anyhow::anyhow!("Failed to quit Neovim instance after {} attempts", max_retries))
+    }
+
     pub fn get_random_port() -> Result<u16> {
         use std::net::TcpListener;
         
