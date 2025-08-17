@@ -150,23 +150,31 @@ fn generate_identifier(target: Option<&PathBuf>) -> Result<String> {
     Ok(canonical.to_string_lossy().to_string())
 }
 
-fn launch_neovim_server(_identifier: &str, target: Option<&PathBuf>, server_address: &str) -> Result<Child> {
-    let target_arg = target
+fn launch_neovim_server(_identifier: &str, target_dir: Option<&PathBuf>, target_file: Option<&PathBuf>, server_address: &str) -> Result<Child> {
+    let dir_arg = target_dir
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| ".".to_string());
 
-    let args = [
-        "--listen", 
-        server_address,
-        "--headless",
-        &target_arg,
+    let mut args = vec![
+        "--listen".to_string(), 
+        server_address.to_string(),
+        "--headless".to_string(),
     ];
+
+    // ファイルが指定されている場合はそれを引数として追加
+    if let Some(file_path) = target_file {
+        args.push(file_path.to_string_lossy().to_string());
+    } else {
+        args.push(dir_arg);
+    }
+
+    let args_str: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
     eprintln!("Executing: nvim {}", args.join(" "));
     info!("Launching Neovim server: {}", server_address);
 
     let mut nvim_cmd = Command::new("nvim");
-    nvim_cmd.args(args);
+    nvim_cmd.args(&args_str);
     
     #[cfg(windows)]
     {
@@ -218,11 +226,18 @@ fn launch_neovide_client(server_address: &str) -> Result<()> {
     Ok(())
 }
 
-async fn focus_existing_instance(server_address: &str) -> Result<()> {
+async fn focus_existing_instance(server_address: &str, target_file: Option<&PathBuf>) -> Result<()> {
     info!("Focusing existing instance: {}", server_address);
     
     // CLAUDE.mdに従ってNeovideFocusコマンドを実行
     utils::focus_nvim_instance(server_address)?;
+    
+    // ファイルが指定されている場合は、そのファイルをリモートで開く
+    if let Some(file_path) = target_file {
+        let file_str = file_path.to_string_lossy();
+        info!("Opening file in existing instance: {}", file_str);
+        utils::open_file_in_nvim_instance(server_address, &file_str)?;
+    }
     
     Ok(())
 }
@@ -244,18 +259,34 @@ async fn main() -> Result<()> {
         server_address: None,
     }));
 
-    // ファイルが指定された場合はエラー
-    if let Some(target) = &cli.target {
-        if target.is_file() {
-            return Err(anyhow!("File arguments are not yet supported. Please specify a directory or use current directory."));
+    // ローカルモードでのファイル/ディレクトリ処理
+    let (target_dir, target_file) = if cli.remote {
+        (cli.target.clone(), None)
+    } else {
+        match &cli.target {
+            Some(path) if path.is_file() => {
+                // ファイルが指定された場合：ディレクトリは.(カレント)、ファイルを記録
+                let file_path = path.canonicalize()?;
+                (None, Some(file_path)) // target_dirはNoneにして常に"."を使用
+            }
+            _ => {
+                // ディレクトリまたは未指定の場合
+                (cli.target.clone(), None)
+            }
         }
-    }
+    };
 
     let identifier = if cli.remote {
         cli.identifier
             .ok_or_else(|| anyhow!("--identifier is required in remote mode"))?
     } else {
-        generate_identifier(cli.target.as_ref())?
+        // ファイル指定の場合でも現在のディレクトリをidentifierに使用
+        let identifier_target = if target_file.is_some() {
+            None // ファイル指定時は現在のディレクトリを使用
+        } else {
+            target_dir.as_ref()
+        };
+        generate_identifier(identifier_target)?
     };
 
     info!("Using identifier: {}", identifier);
@@ -297,7 +328,7 @@ async fn main() -> Result<()> {
                 }
                 
                 // 既存インスタンスにフォーカス（CLAUDE.md仕様）
-                focus_existing_instance(&instance.server_address).await?;
+                focus_existing_instance(&instance.server_address, None).await?;
                 
                 // 監視終了後、新規サーバーをクリーンアップ
                 let result = client.monitor_instance(&identifier).await;
@@ -324,7 +355,7 @@ async fn main() -> Result<()> {
         match client.query_instance(&identifier).await? {
             Some(instance) => {
                 info!("Found existing local instance");
-                focus_existing_instance(&instance.server_address).await?;
+                focus_existing_instance(&instance.server_address, target_file.as_ref()).await?;
                 client.monitor_instance(&identifier).await?;
             }
             None => {
@@ -335,7 +366,7 @@ async fn main() -> Result<()> {
                     let server_address = format!("127.0.0.1:{}", port);
                     
                     // Neovimサーバーを起動
-                    let nvim_process = launch_neovim_server(&identifier, cli.target.as_ref(), &server_address)?;
+                    let nvim_process = launch_neovim_server(&identifier, target_dir.as_ref(), target_file.as_ref(), &server_address)?;
                     
                     // Neovimインスタンスが起動するまで待機
                     info!("Waiting for Neovim instance to start...");

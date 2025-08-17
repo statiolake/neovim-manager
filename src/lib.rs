@@ -109,6 +109,19 @@ pub mod utils {
         Ok(())
     }
 
+    pub fn open_file_in_nvim_instance(server_address: &str, file_path: &str) -> Result<()> {
+        Command::new("nvim")
+            .args([
+                "--server",
+                server_address,
+                "--remote",
+                file_path,
+            ])
+            .output()?;
+        
+        Ok(())
+    }
+
     pub fn quit_nvim_instance(server_address: &str) -> Result<bool> {
         let output = Command::new("nvim")
             .args([
