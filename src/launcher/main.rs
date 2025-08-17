@@ -262,6 +262,7 @@ async fn main() -> Result<()> {
                     cleanup.server_address = Some(server_address.clone());
                 }
                 
+                // 既存インスタンスにフォーカス（CLAUDE.md仕様）
                 focus_existing_instance(&instance.server_address).await?;
                 
                 // 監視終了後、新規サーバーをクリーンアップ
@@ -277,6 +278,10 @@ async fn main() -> Result<()> {
             None => {
                 info!("Registering new remote instance");
                 client.register_instance(&identifier, &server_address).await?;
+                
+                // 新規リモートインスタンスにNeovideクライアントで接続
+                launch_neovide_client(&server_address)?;
+                
                 client.monitor_instance(&identifier).await?;
             }
         }
