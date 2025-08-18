@@ -361,6 +361,26 @@ async fn main() -> Result<()> {
                     .register_instance(&identifier, &server_address)
                     .await?;
 
+                // Neovimインスタンスが起動するまで待機
+                info!("Waiting for remote Neovim instance to start...");
+                let mut attempts = 0;
+                let max_attempts = 30; // 15秒間待機
+
+                loop {
+                    if utils::check_nvim_instance(&server_address).unwrap_or(false) {
+                        info!("Remote Neovim instance is ready");
+                        break;
+                    }
+
+                    attempts += 1;
+                    if attempts >= max_attempts {
+                        error!("Remote Neovim instance failed to start within 15 seconds");
+                        std::process::exit(3);
+                    }
+
+                    sleep(Duration::from_millis(500)).await;
+                }
+
                 // 新規リモートインスタンスにNeovideクライアントで接続
                 launch_neovide_client(&server_address)?;
 
