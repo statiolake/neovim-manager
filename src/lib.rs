@@ -181,4 +181,14 @@ pub mod utils {
             "neovide"
         }
     }
+
+    pub fn get_neovide_extra_args() -> Vec<String> {
+        let mut args = vec![];
+
+        if cfg!(target_os = "macos") {
+            args.push("--no-vsync".to_string());
+        }
+
+        args
+    }
 }

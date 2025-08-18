@@ -211,7 +211,8 @@ fn launch_neovim_server(
 
 fn launch_neovide_client(server_address: &str) -> Result<()> {
     let neovide_cmd = utils::get_neovide_command();
-    let args = ["--server", server_address];
+    let mut args = vec!["--server".to_string(), server_address.to_string()];
+    args.extend(utils::get_neovide_extra_args());
 
     eprintln!("Executing: {} {}", neovide_cmd, args.join(" "));
     info!("Launching Neovide client for server: {}", server_address);
