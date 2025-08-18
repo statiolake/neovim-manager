@@ -48,7 +48,7 @@ impl ManagerClient {
             .unwrap_or(DEFAULT_PORT);
 
         Self {
-            addr: format!("{}:{}", DEFAULT_BIND_ADDR, port),
+            addr: format!("{DEFAULT_BIND_ADDR}:{port}"),
         }
     }
 
@@ -112,7 +112,7 @@ impl ManagerClient {
 
         let request_json = serde_json::to_string(&request)?;
         if debug {
-            eprintln!("Sending request: {}", request_json);
+            eprintln!("Sending request: {request_json}");
         }
 
         stream.write_all(request_json.as_bytes()).await?;

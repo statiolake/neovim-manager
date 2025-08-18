@@ -129,19 +129,17 @@ pub mod utils {
         for attempt in 1..=max_retries {
             match quit_nvim_instance(server_address) {
                 Ok(true) => {
-                    eprintln!("Successfully sent quit to {}", server_address);
+                    eprintln!("Successfully sent quit to {server_address}");
                     return Ok(());
                 }
                 Ok(false) => {
                     eprintln!(
-                        "Quit command failed for {} (attempt {}/{})",
-                        server_address, attempt, max_retries
+                        "Quit command failed for {server_address} (attempt {attempt}/{max_retries})"
                     );
                 }
                 Err(e) => {
                     eprintln!(
-                        "Error sending quit to {} (attempt {}/{}): {}",
-                        server_address, attempt, max_retries, e
+                        "Error sending quit to {server_address} (attempt {attempt}/{max_retries}): {e}"
                     );
                 }
             }

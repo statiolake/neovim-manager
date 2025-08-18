@@ -37,20 +37,20 @@ impl InstanceManager {
 
             if is_healthy {
                 if matches!(instance.health_status, HealthStatus::Unknown) {
-                    info!("Instance {} is now healthy", identifier);
+                    info!("Instance {identifier} is now healthy");
                 }
                 instance.health_status = HealthStatus::Healthy;
                 instance.last_ping = now;
             } else {
                 // ヘルスチェック失敗 = プロセス終了なので即座に削除
-                info!("Instance {} is no longer responding, removing", identifier);
+                info!("Instance {identifier} is no longer responding, removing");
                 to_remove.push(identifier.clone());
             }
         }
 
         for identifier in to_remove {
             instances.remove(&identifier);
-            info!("Removed unresponsive instance: {}", identifier);
+            info!("Removed unresponsive instance: {identifier}");
         }
 
         Ok(())
@@ -107,7 +107,7 @@ impl InstanceManager {
         };
 
         instances.insert(identifier.clone(), instance);
-        info!("Registered instance: {}", identifier);
+        info!("Registered instance: {identifier}");
 
         Ok(())
     }
@@ -116,7 +116,7 @@ impl InstanceManager {
         let mut instances = self.instances.write().await;
 
         if instances.remove(identifier).is_some() {
-            info!("Unregistered instance: {}", identifier);
+            info!("Unregistered instance: {identifier}");
             Ok(())
         } else {
             Err(anyhow::anyhow!("Instance not found"))
@@ -140,7 +140,7 @@ impl InstanceManager {
                     },
                     Err(e) => Err(JsonRpcError {
                         code: errors::INTERNAL_ERROR,
-                        message: format!("Invalid parameters: {}", e),
+                        message: format!("Invalid parameters: {e}"),
                         data: None,
                     }),
                 }
@@ -170,7 +170,7 @@ impl InstanceManager {
                     }
                     Err(e) => Err(JsonRpcError {
                         code: errors::INTERNAL_ERROR,
-                        message: format!("Invalid parameters: {}", e),
+                        message: format!("Invalid parameters: {e}"),
                         data: None,
                     }),
                 }
@@ -187,7 +187,7 @@ impl InstanceManager {
                     },
                     Err(e) => Err(JsonRpcError {
                         code: errors::INTERNAL_ERROR,
-                        message: format!("Invalid parameters: {}", e),
+                        message: format!("Invalid parameters: {e}"),
                         data: None,
                     }),
                 }
@@ -239,12 +239,12 @@ async fn handle_client(stream: TcpStream, manager: Arc<InstanceManager>) -> Resu
             continue;
         }
 
-        info!("Received request: {}", trimmed);
+        info!("Received request: {trimmed}");
 
         let response = match serde_json::from_str::<JsonRpcRequest>(trimmed) {
             Ok(request) => manager.handle_request(request).await,
             Err(e) => {
-                error!("Failed to parse JSON-RPC request: {}", e);
+                error!("Failed to parse JSON-RPC request: {e}");
                 JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
                     result: None,
@@ -259,7 +259,7 @@ async fn handle_client(stream: TcpStream, manager: Arc<InstanceManager>) -> Resu
         };
 
         let response_json = serde_json::to_string(&response)?;
-        info!("Sending response: {}", response_json);
+        info!("Sending response: {response_json}");
 
         writer.write_all(response_json.as_bytes()).await?;
         writer.write_all(b"\n").await?;
@@ -279,9 +279,9 @@ async fn main() -> Result<()> {
         .parse::<u16>()
         .unwrap_or(DEFAULT_PORT);
 
-    let addr = format!("{}:{}", DEFAULT_BIND_ADDR, port);
+    let addr = format!("{DEFAULT_BIND_ADDR}:{port}");
     let listener = TcpListener::bind(&addr).await?;
-    info!("Neovim Instance Manager listening on {}", addr);
+    info!("Neovim Instance Manager listening on {addr}");
 
     let manager = Arc::new(InstanceManager::new());
 
@@ -292,7 +292,7 @@ async fn main() -> Result<()> {
         loop {
             interval.tick().await;
             if let Err(e) = health_check_manager.health_check_all().await {
-                error!("Health check failed: {}", e);
+                error!("Health check failed: {e}");
             }
         }
     });
@@ -300,17 +300,17 @@ async fn main() -> Result<()> {
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
-                info!("New client connected from: {}", addr);
+                info!("New client connected from: {addr}");
                 let manager_clone = Arc::clone(&manager);
                 tokio::spawn(async move {
                     if let Err(e) = handle_client(stream, manager_clone).await {
-                        error!("Error handling client: {}", e);
+                        error!("Error handling client: {e}");
                     }
-                    info!("Client {} disconnected", addr);
+                    info!("Client {addr} disconnected");
                 });
             }
             Err(e) => {
-                error!("Failed to accept connection: {}", e);
+                error!("Failed to accept connection: {e}");
             }
         }
     }
